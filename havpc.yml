@@ -1,0 +1,124 @@
+---
+- name: SETUP of HA VPC for hosting vprofile stack
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Setup VPC
+      ec2_vpc_net:
+        name: vprofile-havpc
+        cidr_block: 172.20.0.0/16
+        region: us-west-1
+        tags:
+          Author: Imran Teli
+          Project: Vprofile
+      register: vpcinfo
+
+    - debug:
+        msg: "{{vpcinfo.vpc.id}}"
+
+    - name: Create Public subnet 1
+      ec2_vpc_subnet:
+        state: present
+        vpc_id: "{{vpcinfo.vpc.id}}"
+        cidr: 172.20.1.0/24
+        region: us-west-1
+        az: us-west-1a
+        resource_tags:
+          Name: vpro-pub-1
+          Author: Imran Teli
+      register: pub1info
+
+
+    - name: Create Public subnet 2
+      ec2_vpc_subnet:
+        state: present
+        vpc_id: "{{vpcinfo.vpc.id}}"
+        cidr: 172.20.2.0/24
+        region: us-west-1
+        az: us-west-1b
+        resource_tags:
+          Name: vpro-pub-2
+          Author: Imran Teli
+      register: pub2info
+
+
+    - name: Create Private subnet 1
+      ec2_vpc_subnet:
+        state: present
+        vpc_id: "{{vpcinfo.vpc.id}}"
+        cidr: 172.20.3.0/24
+        region: us-west-1
+        az: us-west-1a
+        resource_tags:
+          Name: vpro-priv-1
+          Author: Imran Teli
+      register: priv1info
+
+
+    - name: Create Private subnet 2
+      ec2_vpc_subnet:
+        state: present
+        vpc_id: "{{vpcinfo.vpc.id}}"
+        cidr: 172.20.4.0/24
+        region: us-west-1
+        az: us-west-1b
+        resource_tags:
+          Name: vpro-priv-2
+          Author: Imran Teli
+      register: priv2info
+
+    - name: SETUP IGW
+      ec2_vpc_igw:
+        vpc_id: "{{vpcinfo.vpc.id}}"
+        state: present
+        region: us-west-1
+        tags:
+          Name: vpro-IGW
+          Author: Imran Teli
+      register: igw
+
+
+    - name: Set up public subnet route table
+      ec2_vpc_route_table:
+        vpc_id: "{{vpcinfo.vpc.id}}"
+        region: us-west-1
+        tags:
+          Name: Vpro-Pub-RT
+          Author: Imran Teli
+        subnets:
+          - "{{ pub1info.subnet.id }}"
+          - "{{ pub2info.subnet.id }}"
+        routes:
+         - dest: 0.0.0.0/0
+           gateway_id: "{{ igw.gateway_id }}"
+      register: vproPubRT 
+
+
+    - name: Create new nat gateway, using an EIP address  and wait for available status.
+      ec2_vpc_nat_gateway:
+        state: present
+        subnet_id: "{{ pub1info.subnet.id  }}"
+        wait: yes
+        region: us-west-1
+        if_exist_do_not_create: true
+      register: vpronatGW
+
+    - debug:
+        msg: "{{vpronatGW.nat_gateway_id}}"
+      
+    - name: Set up NAT-protected route table
+      ec2_vpc_route_table:
+        vpc_id: "{{vpcinfo.vpc.id}}"
+        region: us-west-1
+        tags:
+          Name: Vpro-Priv-RT
+          Author: Imran Teli
+        subnets:
+          - "{{ priv1info.subnet.id }}"
+          - "{{ priv2info.subnet.id }}"
+        routes:
+          - dest: 0.0.0.0/0
+#            instance_id: "{{vpronatGW.nat_gateway_id}}"
+            nat_gateway_id: "{{vpronatGW.nat_gateway_id}}"
+      register: vproPrivRT
