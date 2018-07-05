@@ -1,0 +1,426 @@
+# Ansible playbook for setting up VProfile project:
+
+---
+- hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: Creating Security Group
+      ec2_group:
+        name: VProfile_Security_Group
+        description: Rules for allowing Traffic on port 22 and 80
+        region: "{{aws_region}}"
+        rules:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
+        rules_egress:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
+    - name: Remove an EC2_key_pair if it is already exist
+      ec2_key:
+        name: VProfile-key
+        state: absent
+        region: "{{aws_region}}"
+    - name: Create an EC2 key
+      ec2_key:
+        name: VProfile-key
+        region: "{{aws_region}}"
+      register: ec2_key 
+    - debug:
+        msg: "{{ec2_key.key.private_key}}"
+    - name: save private key
+      copy:
+        content: "{{ ec2_key.key.private_key }}\n" 
+        dest: "./VProfile-key.pem" 
+        mode: 0600
+      when: ec2_key.changed
+######################################################################      
+    - name: Creating EC2 Instance
+      ec2:
+         key_name: VProfile-key
+         region: "{{aws_region}}"
+         instance_type: t2.micro
+         image: "{{ami}}"
+         wait: yes
+         wait_timeout: 500
+         count: 5
+         instance_tags:
+#           Name: web
+           owner: gopinadh
+         monitoring: no
+         vpc_subnet_id: "{{sub_net}}"
+         assign_public_ip: yes
+         group: VProfile_Security_Group
+      register: ec2_out
+    - debug: 
+        msg: "{{ item }}"
+      with_items:
+        - "{{ec2_out.instances[0].public_ip}}"
+        - "{{ec2_out.instances[1].public_ip}}"
+        - "{{ec2_out.instances[2].public_ip}}"
+        - "{{ec2_out.instances[3].public_ip}}"
+        - "{{ec2_out.instances[4].public_ip}}"
+####################--create the hosts file--#################################          
+    - name: to create hosts file
+      shell: /bin/echo -e ""{{ec2_out.instances[0].private_ip}}" db01""\n"{{ec2_out.instances[1].private_ip}}" mc01""\n"{{ec2_out.instances[2].private_ip}}" mq01""\n"{{ec2_out.instances[3].private_ip}}" app01""\n"{{ec2_out.instances[4].private_ip}}" lb01" >files/host_ips
+
+############All servers should get ssh connections########################
+    - name: wait for SSH to comeup
+      wait_for: host={{item}} port=22 delay=60 timeout=320 state=started
+      with_items:
+        - "{{ec2_out.instances[0].public_ip}}"
+        - "{{ec2_out.instances[1].public_ip}}"
+        - "{{ec2_out.instances[2].public_ip}}"
+        - "{{ec2_out.instances[3].public_ip}}"
+        - "{{ec2_out.instances[4].public_ip}}"
+#####################################################################
+#This is inmemory inventory file.
+    - name: add mysql server ip addresses to hosts group
+      add_host:
+        hostname: "{{ec2_out.instances[0].public_ip}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: VProfile-key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: mysql01
+    - name: add memcache server ip addresses to hosts group
+      add_host:
+        hostname: "{{ec2_out.instances[1].public_ip}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: VProfile-key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: memcache01
+    - name: add RabbitMq server ip addresses to hosts group
+      add_host:
+        hostname: "{{ec2_out.instances[2].public_ip}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: VProfile-key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: rabbitmq01
+    - name: add Tomcat app server ip addresses to hosts group
+      add_host:
+        hostname: "{{ec2_out.instances[3].public_ip}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: VProfile-key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: tomcat01
+    - name: add nginx server ip addresses to hosts group
+      add_host:
+        hostname: "{{ec2_out.instances[4].public_ip}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: VProfile-key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: nginx_lb01
+#######################__DB_SETUP___###########################################
+# dbserver setup
+- hosts: mysql01
+  remote_user: ubuntu 
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: install python2.7
+      raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+    - name: "Installing python dependencies"
+      apt:
+        name: "{{item}}"
+        state: latest
+      with_items:
+      - python-pip
+      - python-dev 
+      - libmysqlclient-dev
+    - name: copy all server ip file from controller to client
+      copy:
+        src: host_ips
+        dest: /home/ubuntu
+    - name: copy hosts into /etc/hosts
+      shell: /bin/echo "`cat host_ips`" >>/etc/hosts
+    - name: installing mysql
+      package:
+        name: "{{ item }}"
+        state: latest
+        update_cache: yes
+        cache_valid_time: 86400
+      with_items:
+        - mysql-server
+        - mysql-client
+#        - python-mysqldb
+      tags: 
+        - package
+    - name: starting mysql service
+      service:
+        name: mysql
+        state: started
+        enabled: yes
+    - name: upgrade system
+      command: apt update
+    - name: install MySQL-python 
+      pip:
+        name: "{{ item }}"
+        state: latest
+      with_items:
+        - MySQL-python
+        - pip  
+      ignore_errors: yes
+    - name: creating mysql user
+      mysql_user: name=admin password=admin123 priv='*.*:ALL' host='%' state=present
+    - name: creating mysql database
+      mysql_db:
+        name: accounts
+        state: present        
+    - name: mysql bind
+      lineinfile: 
+        path: /etc/mysql/mysql.conf.d/mysqld.cnf
+        regexp: '^bind-address'
+        line: 'bind-address = 0.0.0.0'
+      notify:
+        - Restart mysql
+  handlers:
+    - name: Restart mysql
+      service: 
+        name: mysql 
+        state: restarted
+####################_db_deploymeny#####################################
+# dbserver deployment
+- hosts: mysql01
+  remote_user: ubuntu 
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: copying database dump file
+      copy: 
+        src: files/db_backup.sql
+        dest: /root
+      tags: 
+       - deploy
+    - name: restoring database
+      mysql_db:
+        name: accounts
+        login_user: admin
+        login_password: admin123
+        state: import
+        target: /root/db_backup.sql
+      tags: 
+       - deploy
+      notify:
+        - Restart mysql
+  handlers:
+    - name: Restart mysql
+      service: 
+        name: mysql 
+        state: restarted
+ 
+######################--Mem_Cache_Set_Up--##################################
+# memcache setup
+- hosts: memcache01
+  remote_user: ubuntu 
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: install python2.7
+      raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+
+    - name: copy all server ip file from controller to client
+      copy:
+        src: files/host_ips
+        dest: /home/ubuntu
+    - name: copy hosts into /etc/hosts
+      shell: /bin/echo "`cat host_ips`" >>/etc/hosts
+    - name: Install Memcache
+      apt: 
+        name: memcached
+        state: present
+        update_cache: yes
+        cache_valid_time: 86400
+      tags: 
+       - package
+    - name: Start and enable Memcache
+      service:
+        name: memcached
+        state: started
+        enabled: yes
+
+#####################--Rabbit_Mq_Set_Up--###############################   
+# rebbitmqcache setup
+- hosts: rabbitmq01
+  remote_user: ubuntu 
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: install python2.7
+      raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+    - name: copy all server ip file from controller to client
+      copy:
+        src: files/host_ips
+        dest: /home/ubuntu
+    - name: copy hosts into /etc/hosts
+      shell: /bin/echo "`cat host_ips`" >>/etc/hosts
+    - apt_repository:
+        repo: deb http://www.rabbitmq.com/debian/ testing main
+        state: present
+    - name: Add an Apt signing key, uses whichever key is at the URL
+      apt_key:
+        url: https://www.rabbitmq.com/rabbitmq-release-signing-key.asc
+        state: present
+    - name: Add an Apt signing key, uses whichever key is at the URL
+      apt_key:
+        url: https://dl.bintray.com/rabbitmq/Keys/rabbitmq-release-signing-key.asc
+        state: present
+    - name: update the os 
+      command: apt update
+    - name: Install Rabbit MQ
+      apt: 
+        name: rabbitmq-server
+        state: present
+#        update_cache: yes
+#      cache_valid_time: 86400
+      tags: 
+       - package
+    - name: Start and enable Rabbit MQ
+      service:
+        name: rabbitmq-server
+        state: started
+        enabled: yes
+    - name: Config setup
+      copy:
+        content: |
+          [{rabbit, [{loopback_users, []}]}].
+        dest: /etc/rabbitmq/rabbitmq.config
+      notify:
+      - Restart RMQ
+    - rabbitmq_user:
+        user: test
+        password: test
+        configure_priv: .*
+        read_priv: .*
+        write_priv: .*
+        tags: administrator
+        state: present
+      notify:
+      - Restart RMQ
+    - name: Enables the rabbitmq_management plugin
+      rabbitmq_plugin:
+        names: rabbitmq_management
+        state: enabled
+      notify:
+      - Restart RMQ
+  handlers:
+  - name: Restart RMQ
+    service: 
+      name: rabbitmq-server
+      state: restarted
+########################--Tomcat_Set_Up--################################      
+# appserver setup
+- hosts: tomcat01
+  remote_user: ubuntu 
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: install python2.7
+      raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+    - name: copy all server ip file from controller to client
+      copy:
+        src: files/host_ips
+        dest: /home/ubuntu
+    - name: copy hosts into /etc/hosts
+      shell: /bin/echo "`cat host_ips`" >>/etc/hosts
+    - name: installing tomcat
+      package:
+        name: "{{ item }}"
+        state: latest
+        update_cache: yes
+        cache_valid_time: 86400
+      with_items:
+        - tomcat8
+        - tomcat8-admin
+        - tomcat8-docs
+        - tomcat8-common
+      tags: 
+       - package
+    - name: starting tomcat8 service
+      service:
+        name: tomcat8
+        state: started
+        enabled: yes
+    - name: Deploy web application war file
+      copy:
+        src: files/vprofile-v1.war
+        dest: /var/lib/tomcat8/webapps
+      tags: 
+       - deploy
+      notify:
+        Restart tomcat8
+    - name: Create a link to Visulpath application
+      file:
+        src: /var/lib/tomcat8/webapps/vprofile-v1
+        dest: /var/lib/tomcat8/webapps/vprofile
+        state: link
+        force: yes
+      notify:
+        Restart tomcat8
+    - name: Deploy web configuration file
+      template:
+        src: templates/application.j2
+        dest: /var/lib/tomcat8/webapps/vprofile-v1/WEB-INF/classes/application.properties
+        force: yes
+      tags: 
+       - package
+      notify:
+        Restart tomcat8
+  handlers:
+    - name: Restart tomcat8
+      service: 
+        name: tomcat8
+        state: restarted
+
+########################--Nginx_Set_Up--#####################################        
+
+# nginx(load_balancer) setup
+- hosts: nginx_lb01
+  remote_user: ubuntu 
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: install python2.7
+      raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+    - name: copy all server ip file from controller to client
+      copy:
+        src: files/host_ips
+        dest: /home/ubuntu
+    - name: copy hosts into /etc/hosts
+      shell: /bin/echo "`cat host_ips`" >>/etc/hosts
+    - name: Install nginx
+      apt: 
+        name: nginx
+        state: present
+        update_cache: yes
+        cache_valid_time: 86400
+      tags: 
+       - package
+    - name: Start and enable nginx
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+    - name: Disable nginx default website
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+    - name: Deploy web configuration file
+      template:
+        src: templates/nginvpro.j2
+        dest: /etc/nginx/sites-available/vproapp 
+      notify:
+        Restart nginx
+    - name: Enable vproapp website
+      file:
+        src: /etc/nginx/sites-available/vproapp
+        dest: /etc/nginx/sites-enabled/vproapp
+        state: link
+      notify:
+        Restart nginx
+  handlers:
+  - name: Restart nginx
+    service: 
+      name: nginx
+      state: restarted
+
+#####################################################################      

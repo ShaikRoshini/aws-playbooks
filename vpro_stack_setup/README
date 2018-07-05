@@ -1,0 +1,103 @@
+_______________________VPROFILE_PROJECT_________________________
+
+  HII to all we are going to do our VProfile project by using Ansible.
+  We are go to step master playbook for vprofile project.
+
+STEP1:
+
+-->We need to configure ansible in one machine .
+
+STEP2:
+
+-->Then go to your Aws account and you have to create an iam user with administration access.
+-->Download the accesskey and secretkey.
+
+.............Coming to our playbook...............
+
+-->I wrote a single playbook for vprofile
+-->It will automatically trigger all those stuff for vprofile project .
+
+STEP3:
+
+-->create a creadential file ,here i created awscreds
+--> add your creadintial as i mentioned
+#######################################################################
+                   ***In playbook***
+STEP1:
+--> create a security group named with VProfile-sg
+
+STEP2:
+--> create a keypair named with VProfile-key
+--> Then download the key pair  into your current working directoty with permissoins 0600 or 0400.
+**NOTE:
+(it is automatically create a key pair and download it into ur current working directory u can check after complete ur running ur playbook).
+
+STEP3:
+-->Create 5 ec2 instances(count=5) (ubuntu 16.04) and store the output, debug the public ips then it will shows public ips of we created 5 ec2 instances.
+
+STEP4:
+--> We have to save private ips of all server into files/host_ips file. 
+--> After add that private ips into all servers /etc/hosts file for connecting each others 
+--> THis /etc/hosts file resolve the host name to ip.
+
+STEP5:
+
+--> Wait ssh comes up on all public ips
+
+STEP6:
+
+--> Here i am going to create inmemory inventoryfile means no need to create inventory file in our local system manually.
+
+--> Here automatically inventoryfile created with in the playbook.
+
+**Note**: 
+      THis inventory file not working outside the playbook it is only working inside the playbook. 
+
+--> It calls automatically while provisioning part like(db,db deployement,tomcat,memcache,mq,nginx provisioning).
+ 
+
+#################################################################
+----Coming to provisioning part------.
+**Hii here we have to provision all stuff for vprofile
+
+step1:
+--> configure mysql server 
+
+
+step2:
+--> configure dbdeployement
+
+step3:
+
+--> configure memcache server for caching the data
+
+
+step4:
+
+--> configure Rabbit MQ for message queing service
+
+step5:
+
+--> configure Tomcat app server 
+
+
+step6:
+
+--> configure nginx for loadbalancer.
+#####################
+............checking vprofile page on browser.....
+
+         hit the servers ips like as below
+--> tomcatip:8080/vprofile/login
+
+--> nginxip:ip/vprofile/login
+
+**NOTE**:
+--> When you share this playbook to anyone else make sure your aws access and secretkey must be removed from awscreds file.
+
+
+
+
+######################### With Regards Your Imran Team #########################
+
+

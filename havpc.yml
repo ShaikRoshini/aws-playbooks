@@ -1,5 +1,5 @@
 ---
-- name: SETUP of HA VPC for hosting vprofile stack
+- name: SETUP of HA VPC for hosting vprofile stack, create a Jump VPC with a JumpServer in it
   hosts: localhost
   connection: local
   gather_facts: false
@@ -66,6 +66,55 @@
             to_port: 22
             cidr_ip: "{{myip.ansible_facts.ipify_public_ip}}/32"
       register: vproJumpSG
+
+    - name: Create an EC2 key
+      ec2_key:
+        name: Jump-key
+        region: us-west-1
+        force: false
+      register: jump_keyinfo 
+
+    - debug:
+        msg: "{{jump_keyinfo.key.private_key}}"
+      when: jump_keyinfo.changed
+
+    - name: save jump private key
+      copy:
+        content: "{{ jump_keyinfo.key.private_key }}\n" 
+        dest: "./jump-key.pem" 
+        mode: 0600
+      when: jump_keyinfo.changed
+
+    - name: Creating Jump Server
+      ec2:
+         key_name: Jump-key
+         region: us-west-1
+         instance_type: t2.micro
+         image: ami-8d948ced
+         wait: yes
+         wait_timeout: 500
+         instance_tags:
+           Name: JumpServer
+           owner: Imran Teli
+         exact_count: 1
+         count_tag:
+           Name: JumpServer
+           owner: Imran Teli
+         monitoring: no
+         vpc_subnet_id: "{{jumppubnet.subnet.id}}"
+         assign_public_ip: yes
+         group_id: "{{vproJumpSG.group_id}}"
+      register: jumpec2info
+    - debug:
+        msg: "{{jumpec2info}}"
+    - name: add jump server ip addresses to hosts group
+      add_host:
+        hostname: "{{jumpec2info.tagged_instances[0].public_ip}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: jump-key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: jumpservers
+
 
     - name: Setup vprofile stack VPC
       ec2_vpc_net:
@@ -178,7 +227,6 @@
           - "{{ priv2info.subnet.id }}"
         routes:
           - dest: 0.0.0.0/0
-#            instance_id: "{{vpronatGW.nat_gateway_id}}"
             nat_gateway_id: "{{vpronatGW.nat_gateway_id}}"
       register: vproPrivRT
 
@@ -200,7 +248,7 @@
     - name: Creating Vprofile Security Group
       ec2_group:
         name: VProfile_Stack_Security_Group
-        description: Allow Traffic on port 80 from elbsg
+        description: Allow Traffic on port 80 and 443 from elbsg
         region: us-west-1
         vpc_id: "{{vpcinfo.vpc.id}}"
         rules:
@@ -212,29 +260,6 @@
             from_port: 80
             to_port: 80
             group_id: "{{vproELBSG.group_id}}"
-      register: vproStackSG
-
-    - name: Allow all traffic within vprofile stack
-      ec2_group:
-        name: VProfile_Stack_Security_Group
-        description: Allow Traffic internally
-        region: us-west-1
-        vpc_id: "{{vpcinfo.vpc.id}}"
-        rules:
-          - proto: tcp
-            from_port: 443
-            to_port: 443
-            group_id: "{{vproELBSG.group_id}}"
-          - proto: tcp
-            from_port: 80
-            to_port: 80
-            group_id: "{{vproELBSG.group_id}}"
-          - proto: all
-            group_id: "{{vproStackSG.group_id}}"
-          - proto: tcp
-            from_port: 22
-            to_port: 22
-            group_id: "{{vproJumpSG.group_id}}"
       register: vproStackSG
 
     - name: Create local account VPC peering Connection
@@ -255,3 +280,77 @@
         state: accept
       register: action_peer
 
+
+    - name: Allow all traffic within vprofile stack
+      ec2_group:
+        name: VProfile_Stack_Security_Group
+        description: Allow Traffic on port 80 and 443 from elbsg
+        region: us-west-1
+        vpc_id: "{{vpcinfo.vpc.id}}"
+        rules:
+          - proto: tcp
+            from_port: 443
+            to_port: 443
+            group_id: "{{vproELBSG.group_id}}"
+          - proto: tcp
+            from_port: 80
+            to_port: 80
+            group_id: "{{vproELBSG.group_id}}"
+          - proto: all
+            group_id: "{{vproStackSG.group_id}}"
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            group_id: "{{vproJumpSG.group_id}}"
+      register: vproStackSG
+
+    - file:
+        path: vpro_stack_setup/group_vars/vars4VPROstack
+        state: touch
+
+    - name: Add info to variable file
+      blockinfile:
+        dest: vpro_stack_setup/group_vars/vars4VPROstack
+        block: |
+          vprostackvpcID: {{vpcinfo.vpc.id}}
+          vpropub1net: {{pub1info.subnet.id}}
+          vpropub2net: {{pub2info.subnet.id}}
+          vpropriv1net: {{priv1info.subnet.id}}
+          vpropriv2net: {{priv2info.subnet.id}}
+          vproSGID: {{vproStackSG.group_id}}
+
+    - name: Compress Ansible data dir to vpro_stack_setup.tar.gz
+      archive:
+        path: vpro_stack_setup
+        dest: vpro_stack_setup.tar.gz
+
+- name: Setup Jump server with ansible, playbooks and neccessay credentials
+  hosts: jumpservers
+  remote_user: ubuntu 
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: install python2.7
+      raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+
+    - name: Add ansible repo
+      apt_repository:
+        repo: ppa:ansible/ansible
+   
+    - name: Install ansible
+      apt:
+        name: ansible
+        state: present
+        update_cache: yes
+        cache_valid_time: 86400
+    
+#    - name: Push vpro_stack_setup.tar.gz to jump server
+#      copy:
+#         src: vpro_stack_setup.tar.gz
+#         dest: /home/ubuntu/vpro_stack_setup.tar.gz
+
+    - name: Extract /home/ubuntu/vpro_stack_setup.tar.gz
+      unarchive:
+         src: vpro_stack_setup.tar.gz
+         dest: /home/ubuntu/
+         remote_src: yes
