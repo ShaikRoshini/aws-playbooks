@@ -1,0 +1,175 @@
+---
+- name: Setup Vprofile Stack
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars_files:
+    - group_vars/vars4VPROstack
+  tasks:
+    - name: Create vprofile ec2 key
+      ec2_key:
+        name: VProfile_key
+        region: "{{region}}"
+      register: vpro_ec2_key 
+
+    - debug:
+        msg: "{{vpro_ec2_key.key.private_key}}"
+      when: vpro_ec2_key.changed
+
+    - name: Save Vprofile ec2 login private key
+      copy:
+        content: "{{ vpro_ec2_key.key.private_key }}\n" 
+        dest: "./VProfile_key.pem" 
+        mode: 0600
+      when: vpro_ec2_key.changed
+
+######################################################################      
+
+    - name: Creating Nginx instance
+      ec2:
+         key_name: VProfile_key
+         region: us-west-1
+         instance_type: t2.micro
+         image: ami-8d948ced
+         wait: yes
+         wait_timeout: 500
+         instance_tags:
+           Name: Nginx
+           Project: Vprofile
+           Environment: Prod
+           Owner: Imran Teli
+         exact_count: 1
+         count_tag:
+           Name: Nginx
+           Project: Vprofile
+           Environment: Prod
+           Owner: Imran Teli
+         monitoring: no
+         vpc_subnet_id: "{{item}}"
+         assign_public_ip: no
+         group_id: "{{vproSGID}}"
+      with_items:
+        - "{{vpropriv1net}}"
+        - "{{vpropriv2net}}"
+      register: nginxinst
+
+    - name: Creating Tomcat instance
+      ec2:
+         key_name: VProfile_key
+         region: us-west-1
+         instance_type: t2.micro
+         image: ami-8d948ced
+         wait: yes
+         wait_timeout: 500
+         instance_tags:
+           Name: Tomcat
+           Project: Vprofile
+           Environment: Prod
+           Owner: Imran Teli
+         exact_count: 1
+         count_tag:
+           Name: Tomcat
+           Project: Vprofile
+           Environment: Prod
+           Owner: Imran Teli
+         monitoring: no
+         vpc_subnet_id: "{{item}}"
+         assign_public_ip: no
+         group_id: "{{vproSGID}}"
+      with_items:
+        - "{{vpropriv1net}}"
+        - "{{vpropriv2net}}"
+      register: tomcatinst
+
+    - name: Creating Rabbit MQ Instance
+      ec2:
+         key_name: VProfile_key
+         region: us-west-1
+         instance_type: t2.micro
+         image: ami-8d948ced
+         wait: yes
+         wait_timeout: 500
+         instance_tags:
+           Name: RMQ
+           Project: Vprofile
+           Environment: Prod
+           Owner: Imran Teli
+         exact_count: 1
+         count_tag:
+           Name: RMQ
+           Project: Vprofile
+           Environment: Prod
+           Owner: Imran Teli
+         monitoring: no
+         vpc_subnet_id: "{{item}}"
+         assign_public_ip: no
+         group_id: "{{vproSGID}}"
+      with_items:
+        - "{{vpropriv1net}}"
+      register: RMQinst
+
+    - name: Creating Memcache Instance
+      ec2:
+         key_name: VProfile_key
+         region: us-west-1
+         instance_type: t2.micro
+         image: ami-8d948ced
+         wait: yes
+         wait_timeout: 500
+         instance_tags:
+           Name: MC
+           Project: Vprofile
+           Environment: Prod
+           Owner: Imran Teli
+         exact_count: 1
+         count_tag:
+           Name: MC
+           Project: Vprofile
+           Environment: Prod
+           Owner: Imran Teli
+         monitoring: no
+         vpc_subnet_id: "{{item}}"
+         assign_public_ip: no
+         group_id: "{{vproSGID}}"
+      with_items:
+        - "{{vpropriv1net}}"
+      register: MCinst
+
+    - debug:
+        msg: "{{MCinst}}"
+
+    - rds_subnet_group:
+        state: present
+        name: vpro_rds_netgrp
+        region: "{{region}}"
+        description: Vprofile RDS subnet group
+        subnets:
+        - "{{vpropriv1net}}"
+        - "{{vpropriv2net}}"
+      register: vpro_rds_netgrp
+    - debug:
+        msg: "{{vpro_rds_netgrp}}"
+
+    - rds:
+        command: create
+        instance_name: Vprod-mysql
+        db_engine: MySQL
+        region: "{{region}}"
+        size: 20
+        instance_type: db.t2.micro
+        subnet: "{{vpropriv1net}}"
+        db_name: accounts
+        subnet: "{{vpro_rds_netgrp.subnet_group.name}}"
+        vpc_security_groups: "{{vproSGID}}"
+        wait: yes
+        wait_timeout: 600
+        username: root
+        password: admin123
+        tags:
+          Environment: Prod
+          Application: Vprofile
+      register: vpro_rds
+    
+    - debug:
+        msg: "{{vpro_rds.instance.endpoint}}"
+

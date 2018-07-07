@@ -8,6 +8,16 @@
       ipify_facts:
       register: myip
 
+    - name: Setup vprofile stack VPC
+      ec2_vpc_net:
+        name: vprofile-havpc
+        cidr_block: 172.20.0.0/16
+        region: us-west-1
+        tags:
+          Author: Imran Teli
+          Project: Vprofile
+      register: vpcinfo
+
     - name: Setup Jump VPC
       ec2_vpc_net:
         name: JumpVPC
@@ -17,6 +27,28 @@
           Author: Imran Teli
           Project: Vprofile
       register: jumpvpcinfo
+
+    - name: Create local account VPC peering Connection
+      ec2_vpc_peer:
+        region: us-west-1
+        vpc_id: "{{jumpvpcinfo.vpc.id}}"
+        peer_vpc_id: "{{vpcinfo.vpc.id}}"
+        state: present
+        tags:
+          Name: Peering connection for Jump VPC  to Vprofile stack VPC
+          Project: Vprofile
+      register: vpc_peer
+    - debug:
+        msg: "{{vpc_peer}}"
+
+    - name: Accept local VPC peering request
+      ec2_vpc_peer:
+        region: us-west-1
+        peering_id: "{{ vpc_peer.peering_id }}"
+        state: accept
+      register: action_peer
+    - debug:
+        msg: "{{action_peer}}"
 
     - name: Create Public subnet for Jump
       ec2_vpc_subnet:
@@ -52,7 +84,12 @@
         routes:
          - dest: 0.0.0.0/0
            gateway_id: "{{ jumpigw.gateway_id }}"
+         - dest: 172.20.0.0/16
+           vpc_peering_connection_id: "{{ vpc_peer.peering_id }}"
       register: vproJumpRT
+  
+    - debug:
+        msg: "{{vproJumpRT}}"
  
     - name: Creating Jump Sec Group
       ec2_group:
@@ -67,7 +104,7 @@
             cidr_ip: "{{myip.ansible_facts.ipify_public_ip}}/32"
       register: vproJumpSG
 
-    - name: Create an EC2 key
+    - name: Create Jump server EC2 key
       ec2_key:
         name: Jump-key
         region: us-west-1
@@ -116,15 +153,6 @@
         groups: jumpservers
 
 
-    - name: Setup vprofile stack VPC
-      ec2_vpc_net:
-        name: vprofile-havpc
-        cidr_block: 172.20.0.0/16
-        region: us-west-1
-        tags:
-          Author: Imran Teli
-          Project: Vprofile
-      register: vpcinfo
 
 
     - name: Create Public subnet 1
@@ -202,6 +230,8 @@
         routes:
          - dest: 0.0.0.0/0
            gateway_id: "{{ igw.gateway_id }}"
+         - dest: 192.168.1.0/24
+           vpc_peering_connection_id: "{{ vpc_peer.peering_id }}"
       register: vproPubRT 
 
 
@@ -228,6 +258,8 @@
         routes:
           - dest: 0.0.0.0/0
             nat_gateway_id: "{{vpronatGW.nat_gateway_id}}"
+          - dest: 192.168.1.0/24
+            vpc_peering_connection_id: "{{ vpc_peer.peering_id }}"
       register: vproPrivRT
 
     - name: Creating ELB Sec Group
@@ -260,25 +292,16 @@
             from_port: 80
             to_port: 80
             group_id: "{{vproELBSG.group_id}}"
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: 192.168.1.0/32
+          - proto: tcp
+            from_port: 3306
+            to_port: 3306
+            cidr_ip: 192.168.1.0/32
       register: vproStackSG
 
-    - name: Create local account VPC peering Connection
-      ec2_vpc_peer:
-        region: us-west-1
-        vpc_id: "{{jumpvpcinfo.vpc.id}}"
-        peer_vpc_id: "{{vpcinfo.vpc.id}}"
-        state: present
-        tags:
-          Name: Peering connection for Jump VPC  to Vprofile stack VPC
-          Project: Vprofile
-      register: vpc_peer
-
-    - name: Accept local VPC peering request
-      ec2_vpc_peer:
-        region: us-west-1
-        peering_id: "{{ vpc_peer.peering_id }}"
-        state: accept
-      register: action_peer
 
 
     - name: Allow all traffic within vprofile stack
@@ -302,6 +325,10 @@
             from_port: 22
             to_port: 22
             group_id: "{{vproJumpSG.group_id}}"
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: 192.168.1.0/32
       register: vproStackSG
 
     - file:
@@ -312,6 +339,7 @@
       blockinfile:
         dest: vpro_stack_setup/group_vars/vars4VPROstack
         block: |
+          region: us-west-1
           vprostackvpcID: {{vpcinfo.vpc.id}}
           vpropub1net: {{pub1info.subnet.id}}
           vpropub2net: {{pub2info.subnet.id}}
@@ -337,20 +365,35 @@
       apt_repository:
         repo: ppa:ansible/ansible
    
-    - name: Install ansible
+    - name: Install ansible & boto
       apt:
-        name: ansible
+        name: "{{item}}"
         state: present
         update_cache: yes
         cache_valid_time: 86400
+      with_items:
+        - ansible
+        - python-botocore 
+        - python-boto3 
+        - python-boto
     
-#    - name: Push vpro_stack_setup.tar.gz to jump server
-#      copy:
-#         src: vpro_stack_setup.tar.gz
-#         dest: /home/ubuntu/vpro_stack_setup.tar.gz
+    - name: Push vpro_stack_setup.tar.gz to jump server
+      copy:
+         src: vpro_stack_setup.tar.gz
+         dest: /home/ubuntu/vpro_stack_setup.tar.gz
 
     - name: Extract /home/ubuntu/vpro_stack_setup.tar.gz
       unarchive:
          src: vpro_stack_setup.tar.gz
          dest: /home/ubuntu/
          remote_src: yes
+
+    - file:
+        path: /home/ubuntu
+        owner: ubuntu
+        group: ubuntu
+        recurse: yes
+
+    - name: Information about infra
+      debug: 
+        msg: "Login to jump server: ssh -i jump-key.pem {{inventory_hostname}}"

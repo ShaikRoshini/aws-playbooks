@@ -1,8 +1,9 @@
 # BEGIN ANSIBLE MANAGED BLOCK
-vprostackvpcID: vpc-6a91da0d
-vpropub1net: subnet-42fea319
-vpropub2net: subnet-b17979d6
-vpropriv1net: subnet-7dc39e26
-vpropriv2net: subnet-537a7a34
-vproSGID: sg-f8610d80
+region: us-west-1
+vprostackvpcID: vpc-0acf856d
+vpropub1net: subnet-d4a1fd8f
+vpropub2net: subnet-fc52519b
+vpropriv1net: subnet-aaa6faf1
+vpropriv2net: subnet-be5350d9
+vproSGID: sg-608ce418
 # END ANSIBLE MANAGED BLOCK
