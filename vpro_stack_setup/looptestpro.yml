@@ -1,0 +1,192 @@
+---
+- name: Setup Vprofile Stack
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars_files:
+    - group_vars/vars4VPROstack
+  tasks:
+    - name: Create vprofile ec2 key
+      ec2_key:
+        name: VProfile_key
+        region: "{{region}}"
+      register: vpro_ec2_key 
+
+    - debug:
+        msg: "{{vpro_ec2_key.key.private_key}}"
+      when: vpro_ec2_key.changed
+
+    - name: Save Vprofile ec2 login private key
+      copy:
+        content: "{{ vpro_ec2_key.key.private_key }}\n" 
+        dest: "./VProfile_key.pem" 
+        mode: 0600
+      when: vpro_ec2_key.changed
+
+######################################################################      
+
+    - name: Creating All instance
+      ec2:
+         key_name: VProfile_key
+         region: us-west-1
+         instance_type: t2.micro
+         image: ami-8d948ced
+         wait: yes
+         wait_timeout: 500
+         instance_tags:
+           Name: "{{item.name}}"
+           Project: Vprofile
+           Environment: Prod
+           Owner: Imran Teli
+         exact_count: 1
+         count_tag:
+           Name: "{{item.name}}"
+           Project: Vprofile
+           Environment: Prod
+           Owner: Imran Teli
+         monitoring: no
+         vpc_subnet_id: "{{item.subnet}}"
+         assign_public_ip: no
+         group_id: "{{vproSGID}}"
+      loop:
+        - name: Nginx01
+          subnet: "{{vpropriv1net}}"
+        - name: Niginx02
+          subnet: "{{vpropriv2net}}"
+        - name: Tomcat01
+          subnet: "{{vpropriv1net}}"
+        - name: Tomcat02
+          subnet: "{{vpropriv2net}}"
+        - name: RMQ01
+          subnet: "{{vpropriv1net}}"
+        - name: MC01
+          subnet: "{{vpropriv1net}}"
+      register: stackinst
+
+#    - debug:
+#        msg: "{{stackinst}}"
+    - name: wait for SSH to comeup
+      wait_for: 
+        host: "{{item}}" 
+        port: 22 
+        delay: 1 
+        timeout: 320 
+        state: started
+      with_items:
+        - "{{stackinst.results[0].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[1].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[2].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[3].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[4].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[5].tagged_instances[0].private_ip}}"
+
+    - name: add memcache server ip addresses to hosts group
+      add_host:
+        hostname: "{{stackinst.results[5].tagged_instances[0].private_ip}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: VProfile_key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: memcache
+
+    - name: add RabbitMq server ip addresses to hosts group
+      add_host:
+        hostname: "{{stackinst.results[4].tagged_instances[0].private_ip}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: VProfile_key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: rabbitmq
+
+    - name: add Tomcat app server ip addresses to hosts group
+      add_host:
+        hostname: "{{item}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: VProfile_key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: tomcat
+      with_items:
+        - "{{stackinst.results[3].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[2].tagged_instances[0].private_ip}}"
+
+    - name: add nginx server ip addresses to hosts group
+      add_host:
+        hostname: "{{item}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: VProfile_key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: nginx
+      with_items:
+        - "{{stackinst.results[1].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[0].tagged_instances[0].private_ip}}"
+
+    - file:
+        path: group_vars/hostsfile
+        state: touch
+
+    - blockinfile:
+       path: group_vars/hostsfile
+       block: |
+          lb01: {{stackinst.results[0].tagged_instances[0].private_ip}}
+          lb02: {{stackinst.results[1].tagged_instances[0].private_ip}}
+          app01: {{stackinst.results[2].tagged_instances[0].private_ip}}
+          app02: {{stackinst.results[3].tagged_instances[0].private_ip}}
+          mq01: {{stackinst.results[4].tagged_instances[0].private_ip}}
+          mc01: {{stackinst.results[5].tagged_instances[0].private_ip}}
+
+ 
+#####Push Hosts File to all machines###
+- name: Hostsfile for all
+  hosts: [memcache, rabbitmq, nginx, tomcat]
+  remote_user: ubuntu 
+  become: yes
+  gather_facts: no
+  vars_files:
+    - group_vars/hostsfile
+  tasks:
+    - name: install python2.7
+      raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+    
+    - name: Update hosts file
+      blockinfile:
+        path: /etc/hosts
+        block: |
+          {{lb01}} lb01 
+          {{lb02}} lb02
+          {{app01}} app01 
+          {{app01}} app02 
+          {{mq01}} mq01 
+#    - rds_subnet_group:
+#        state: present
+#        name: vpro_rds_netgrp
+#        region: "{{region}}"
+#        description: Vprofile RDS subnet group
+#        subnets:
+#        - "{{vpropriv1net}}"
+#        - "{{vpropriv2net}}"
+#      register: vpro_rds_netgrp
+#    - debug:
+#        msg: "{{vpro_rds_netgrp}}"
+#
+#    - rds:
+#        command: create
+#        instance_name: Vprod-mysql
+#        db_engine: MySQL
+#        region: "{{region}}"
+#        size: 20
+#        instance_type: db.t2.micro
+#        subnet: "{{vpropriv1net}}"
+#        db_name: accounts
+#        subnet: "{{vpro_rds_netgrp.subnet_group.name}}"
+#        vpc_security_groups: "{{vproSGID}}"
+#        wait: yes
+#        wait_timeout: 600
+#        username: root
+#        password: admin123
+#        tags:
+#          Environment: Prod
+#          Application: Vprofile
+#      register: vpro_rds
+#    
+#    - debug:
+#        msg: "{{vpro_rds.instance.endpoint}}"
+#
+
