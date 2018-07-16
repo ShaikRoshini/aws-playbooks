@@ -1,0 +1,15 @@
+---
+- name: LEarning loop
+  hosts: localhost
+  connection: local
+  tasks:
+    - debug:
+        msg: "{{item.name}} {{item.subnet}} {{item.SG}}"
+      loop:
+        - name: tomcat1
+          subnet: us-west-1a 
+          SG: tomcatsg
+        - name: tomcat2
+          subnet: us-west-1b
+          SG: tomcatsg
+

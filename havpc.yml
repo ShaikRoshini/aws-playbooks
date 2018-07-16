@@ -35,7 +35,7 @@
         peer_vpc_id: "{{vpcinfo.vpc.id}}"
         state: present
         tags:
-          Name: Peering connection for Jump VPC  to Vprofile stack VPC
+          Name: Peering1 connection for Jump VPC  to Vprofile stack VPC
           Project: Vprofile
       register: vpc_peer
     - debug:
@@ -326,6 +326,10 @@
             to_port: 22
             group_id: "{{vproJumpSG.group_id}}"
           - proto: tcp
+            from_port: 80
+            to_port: 80
+            group_id: "{{vproJumpSG.group_id}}"
+          - proto: tcp
             from_port: 22
             to_port: 22
             cidr_ip: 192.168.1.0/32
@@ -346,6 +350,7 @@
           vpropriv1net: {{priv1info.subnet.id}}
           vpropriv2net: {{priv2info.subnet.id}}
           vproSGID: {{vproStackSG.group_id}}
+          vproELBSGID: {{vproELBSG.group_id}}
 
     - name: Compress Ansible data dir to vpro_stack_setup.tar.gz
       archive:

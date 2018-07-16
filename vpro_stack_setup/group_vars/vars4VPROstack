@@ -6,4 +6,5 @@ vpropub2net: subnet-f44e4193
 vpropriv1net: subnet-7caff727
 vpropriv2net: subnet-0db1bd6a
 vproSGID: sg-2abffa52
+vproELBSGID: sg-25b0f55d
 # END ANSIBLE MANAGED BLOCK
