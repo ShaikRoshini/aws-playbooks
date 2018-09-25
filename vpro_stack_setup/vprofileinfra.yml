@@ -1,0 +1,585 @@
+---
+- name: Setup Vprofile Stack
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars_files:
+    - group_vars/vars4VPROstack
+    - group_vars/safevars.yml
+  tasks:
+    - name: Create vprofile ec2 key
+      ec2_key:
+        name: VProfile_key
+        region: "{{region}}"
+      register: vpro_ec2_key 
+
+    - debug:
+        msg: "{{vpro_ec2_key.key.private_key}}"
+      when: vpro_ec2_key.changed
+
+    - name: Save Vprofile ec2 login private key
+      copy:
+        content: "{{ vpro_ec2_key.key.private_key }}\n" 
+        dest: "./VProfile_key.pem" 
+        mode: 0600
+      when: vpro_ec2_key.changed
+
+######################################################################      
+
+    - name: Creating All instance
+      ec2:
+         key_name: VProfile_key
+         region: us-west-1
+         instance_type: t2.micro
+         image: ami-8d948ced
+         wait: yes
+         wait_timeout: 500
+         instance_tags:
+           Name: "{{item.name}}"
+           Project: Vprofile
+           Environment: Prod
+           Owner: Imran Teli
+         exact_count: 1
+         count_tag:
+           Name: "{{item.name}}"
+           Project: Vprofile
+           Environment: Prod
+           Owner: Imran Teli
+         monitoring: no
+         vpc_subnet_id: "{{item.subnet}}"
+         assign_public_ip: no
+         group_id: "{{vproSGID}}"
+      loop:
+        - name: Nginx01
+          subnet: "{{vpropriv1net}}"
+        - name: Niginx02
+          subnet: "{{vpropriv2net}}"
+        - name: Tomcat01
+          subnet: "{{vpropriv1net}}"
+        - name: Tomcat02
+          subnet: "{{vpropriv2net}}"
+        - name: RMQ01
+          subnet: "{{vpropriv1net}}"
+        - name: MC01
+          subnet: "{{vpropriv1net}}"
+        - name: Jenkins-Server
+          subnet: "{{vpropriv1net}}"
+        - name: Nexus
+          subnet: "{{vpropriv1net}}"
+      register: stackinst
+
+    - name: wait for SSH to comeup
+      wait_for: 
+        host: "{{item}}" 
+        port: 22 
+        delay: 1 
+        timeout: 320 
+        state: started
+      with_items:
+        - "{{stackinst.results[0].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[1].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[2].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[3].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[4].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[5].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[6].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[7].tagged_instances[0].private_ip}}"
+
+
+    - name: add Nexus server ip addresses to hosts group
+      add_host:
+        hostname: "{{stackinst.results[7].tagged_instances[0].private_ip}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: VProfile_key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: nexus
+
+    - name: add Jenkins server ip addresses to hosts group
+      add_host:
+        hostname: "{{stackinst.results[6].tagged_instances[0].private_ip}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: VProfile_key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: jenkins
+
+    - name: add memcache server ip addresses to hosts group
+      add_host:
+        hostname: "{{stackinst.results[5].tagged_instances[0].private_ip}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: VProfile_key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: memcache
+
+    - name: add RabbitMq server ip addresses to hosts group
+      add_host:
+        hostname: "{{stackinst.results[4].tagged_instances[0].private_ip}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: VProfile_key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: rabbitmq
+
+    - name: add Tomcat app server ip addresses to hosts group
+      add_host:
+        hostname: "{{item}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: VProfile_key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: tomcat
+      with_items:
+        - "{{stackinst.results[3].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[2].tagged_instances[0].private_ip}}"
+
+    - name: add nginx server ip addresses to hosts group
+      add_host:
+        hostname: "{{item}}"
+        ansible_ssh_user: ubuntu
+        ansible_ssh_private_key_file: VProfile_key.pem
+        ansible_python_interpreter: /usr/bin/python2.7
+        groups: nginx
+      with_items:
+        - "{{stackinst.results[1].tagged_instances[0].private_ip}}"
+        - "{{stackinst.results[0].tagged_instances[0].private_ip}}"
+
+    - file:
+        path: group_vars/hostsfile
+        state: touch
+
+
+    - elb_classic_lb:
+        name: "VPROFILE-ELB"
+        state: present
+        region: "{{region}}"
+        security_group_ids: "{{vproELBSGID}}"
+        instance_ids:
+          - "{{stackinst.results[1].tagged_instances[0].id}}"
+          - "{{stackinst.results[0].tagged_instances[0].id}}"
+        subnets:
+          - "{{vpropub1net}}"
+          - "{{vpropub2net}}"
+        listeners:
+          - protocol: http # options are http, https, ssl, tcp
+            load_balancer_port: 80
+            instance_port: 80
+        health_check:
+          ping_protocol: http # options are http, https, ssl, tcp
+          ping_port: 80
+          ping_path: "/index.html" # not required for tcp or ssl
+          response_timeout: 5 # seconds
+          interval: 30 # seconds
+          unhealthy_threshold: 2
+          healthy_threshold: 5
+#        access_logs:
+#          interval: 5 # minutes (defaults to 60)
+#          s3_location: "vprfile-acess-logs" # This value is required if access_logs is set
+#          s3_prefix: "logs"
+      register: ELBinfo
+
+
+ 
+    - rds_subnet_group:
+        state: present
+        name: vpro_rds_netgrp
+        region: "{{region}}"
+        description: Vprofile RDS subnet group
+        subnets:
+        - "{{vpropriv1net}}"
+        - "{{vpropriv2net}}"
+      register: vpro_rds_netgrp
+
+    - rds:
+        command: create
+        instance_name: Vprod-mysql
+        db_engine: MySQL
+        region: "{{region}}"
+        size: 20
+        instance_type: db.t2.micro
+        subnet: "{{vpropriv1net}}"
+        db_name: accounts
+        subnet: "{{vpro_rds_netgrp.subnet_group.name}}"
+        vpc_security_groups: "{{vproSGID}}"
+        wait: yes
+        wait_timeout: 600
+        username: "{{dbuser}}"
+        password: "{{dbpass}}"
+        tags:
+          Environment: Prod
+          Application: Vprofile
+      register: vpro_rds
+    
+    - blockinfile:
+       path: group_vars/hostsfile
+       block: |
+          lb01: {{stackinst.results[0].tagged_instances[0].private_ip}}
+          lb02: {{stackinst.results[1].tagged_instances[0].private_ip}}
+          app01: {{stackinst.results[2].tagged_instances[0].private_ip}}
+          app02: {{stackinst.results[3].tagged_instances[0].private_ip}}
+          mq01: {{stackinst.results[4].tagged_instances[0].private_ip}}
+          mc01: {{stackinst.results[5].tagged_instances[0].private_ip}}
+          jenkins01: {{stackinst.results[6].tagged_instances[0].private_ip}}
+          nexus01: {{stackinst.results[7].tagged_instances[0].private_ip}}
+          db01: {{vpro_rds.instance.endpoint}}
+
+#####Push Hosts File to all machines###
+- name: Hostsfile for all
+  hosts: [memcache, rabbitmq, nginx, tomcat, jenkins, nexus]
+  remote_user: ubuntu 
+  become: yes
+  gather_facts: no
+  vars_files:
+    - group_vars/hostsfile
+  tasks:
+    - name: install python2.7
+      raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+    
+    - name: Update hosts file
+      blockinfile:
+        path: /etc/hosts
+        block: |
+          {{lb01}} lb01 
+          {{lb02}} lb02
+          {{app01}} app01 
+          {{app01}} app02 
+          {{mq01}} mq01           
+          {{jenkins01}} jenkins01
+          {{nexus01}} nexus01
+# memcache setup
+- hosts: memcache
+  remote_user: ubuntu 
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Install Memcache
+      apt: 
+        name: memcached
+        state: present
+        update_cache: yes
+        cache_valid_time: 86400
+      tags: 
+       - package
+    - name: Start and enable Memcache
+      service:
+        name: memcached
+        state: started
+        enabled: yes
+
+#####################--Rabbit_Mq_Set_Up--###############################   
+# rebbitmqcache setup
+- hosts: rabbitmq
+  remote_user: ubuntu 
+  become: yes
+  gather_facts: no
+  vars_files:
+    - group_vars/safevars.yml
+  tasks:
+    - name: Install Erlang repository Package
+      apt: 
+       deb: https://packages.erlang-solutions.com/erlang-solutions_1.0_all.deb
+
+    - name: Add an Erlang Solutions public key
+      apt_key:
+        url: https://packages.erlang-solutions.com/ubuntu/erlang_solutions.asc
+        state: present
+
+    - name: Install erlang
+      apt:
+        name: erlang
+        update_cache: yes
+        cache_valid_time: 86400
+        state: present
+
+    - apt_repository:
+        repo: deb https://dl.bintray.com/rabbitmq/debian xenial main
+        state: present
+
+    - name: Add an Apt signing key, uses whichever key is at the URL
+      apt_key:
+        url: https://www.rabbitmq.com/rabbitmq-release-signing-key.asc
+        state: present
+
+    - name: Add an Apt signing key, uses whichever key is at the URL
+      apt_key:
+        url: https://dl.bintray.com/rabbitmq/Keys/rabbitmq-release-signing-key.asc
+        state: present
+
+    - name: Install Rabbit MQ
+      apt: 
+        name: rabbitmq-server
+        state: present
+        update_cache: yes
+      cache_valid_time: 86400
+      tags: 
+       - package
+
+    - name: Start and enable Rabbit MQ
+      service:
+        name: rabbitmq-server
+        state: started
+        enabled: yes
+
+    - name: Config setup
+      copy:
+        content: |
+          [{rabbit, [{loopback_users, []}]}].
+        dest: /etc/rabbitmq/rabbitmq.config
+      notify:
+      - Restart RMQ
+
+    - rabbitmq_user:
+        user: "{{rmquser}}"
+        password: "{{rmqpass}}"
+        configure_priv: .*
+        read_priv: .*
+        write_priv: .*
+        tags: administrator
+        state: present
+      notify:
+      - Restart RMQ
+
+    - name: Enables the rabbitmq_management plugin
+      rabbitmq_plugin:
+        names: rabbitmq_management
+        state: enabled
+      notify:
+      - Restart RMQ
+
+  handlers:
+  - name: Restart RMQ
+    service: 
+      name: rabbitmq-server
+      state: restarted
+########################--Tomcat_Set_Up--################################      
+# appserver setup
+- hosts: tomcat
+  remote_user: ubuntu 
+  become: yes
+  gather_facts: no
+  vars_files:
+    - group_vars/hostsfile
+    - group_vars/safevars.yml
+  tasks:
+    - name: installing tomcat
+      package:
+        name: "{{ item }}"
+        state: latest
+        update_cache: yes
+        cache_valid_time: 86400
+      with_items:
+        - tomcat8
+        - tomcat8-admin
+        - tomcat8-docs
+        - tomcat8-common
+        - python-mysqldb
+        - mysql-client
+      tags: 
+       - package
+    - name: starting tomcat8 service
+      service:
+        name: tomcat8
+        state: started
+        enabled: yes
+
+    - name: Clean old artifact
+      file:
+        path: "{{item}}"
+        state: absent
+      with_items:
+         - /var/lib/tomcat8/webapps/ROOT.war
+         - /var/lib/tomcat8/webapps/ROOT
+
+    - name: Deploy web application war file
+      copy:
+        src: files/vprofile-v1.war
+        dest: /var/lib/tomcat8/webapps/ROOT.war
+      tags: 
+       - deploy
+      register: warcopy
+      
+    - name: Restart tomcat8
+      service: 
+        name: tomcat8
+        state: restarted
+      when: warcopy.changed
+
+    - wait_for:
+        path: /var/lib/tomcat8/webapps/ROOT/WEB-INF/
+        timeout: 200
+
+    - name: Deploy web configuration file
+      template:
+        src: templates/application.j2
+        dest: /var/lib/tomcat8/webapps/ROOT/WEB-INF/classes/application.properties
+        force: yes
+      tags: 
+       - package
+      notify:
+        Restart tomcat8
+   
+    - copy:
+       src: files/db_backup.sql
+       dest: /tmp/db_backup.sql
+
+    - name: Import file.sql 
+      mysql_db:
+       login_host: "{{db01}}"
+       login_user: "{{dbuser}}"
+       login_password: "{{dbpass}}"
+       state: import
+       name: accounts
+#       target: /var/lib/tomcat8/webapps/ROOT/WEB-INF/classes/db_backup.sql
+       target: /tmp/db_backup.sql
+
+  handlers:
+    - name: Restart tomcat8
+      service: 
+        name: tomcat8
+        state: restarted
+
+########################--Nginx_Set_Up--#####################################        
+
+# nginx(load_balancer) setup
+- hosts: nginx
+  remote_user: ubuntu 
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Install nginx
+      apt: 
+        name: nginx
+        state: present
+        update_cache: yes
+        cache_valid_time: 86400
+      tags: 
+       - package
+    - name: Start and enable nginx
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+    - name: Disable nginx default website
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+    - name: Deploy web configuration file
+      template:
+        src: templates/nginvpro.j2
+        dest: /etc/nginx/sites-available/vproapp 
+      notify:
+        Restart nginx
+    - name: Enable vproapp website
+      file:
+        src: /etc/nginx/sites-available/vproapp
+        dest: /etc/nginx/sites-enabled/vproapp
+        state: link
+      notify:
+        Restart nginx
+  handlers:
+  - name: Restart nginx
+    service: 
+      name: nginx
+      state: restarted
+
+
+- hosts: jenkins
+  become: yes
+  remote_user: root
+  gather_facts: false
+  tasks:
+
+    - name: installing python depencencies
+      apt:
+        name: "{{item}}"
+        state: latest
+      with_items:
+         - python-pip
+         - python-dev
+
+    - name: install packages
+      apt:
+        update_cache: yes
+        cache_valid_time: 86400
+        name: "{{item}}"
+        state: present
+      with_items:
+        - wget
+        - git
+        - openjdk-8-jdk
+        - maven
+        - apt-transport-https
+        - ca-certificates 
+        - curl
+        - software-properties-common
+      ignore_errors: true
+
+
+    - name: import key for jenkins & docker
+      apt_key:
+        url: https://pkg.jenkins.io/debian/jenkins-ci.org.key 
+        state: present
+
+    - name: Debian package repository of Jenkins and add key
+      apt_repository:
+        repo: deb http://pkg.jenkins.io/debian-stable binary/
+        filename: jenkins.list
+        state: present
+
+
+    - name: install jenkins 
+      apt:
+        name: jenkins
+        state: present
+        update_cache: yes
+        cache_valid_time: 86400
+       
+    - name: disable the firewall
+      ufw:
+        rule: deny
+        state: disabled
+
+    - name: Copy Jenkins Data files
+      copy:
+        src: files/jenkins_home.tar.gz
+        dest: /var/lib/jenkins_home.tar.gz
+
+    - name: Unarchive Jenkins Data files
+      unarchive:
+        src: /var/lib/jenkins_home.tar.gz
+        dest: /var/lib/
+        remote_src: yes
+      notify: Restart jenkins
+
+  handlers:
+    - name: Restart jenkins
+      service:
+        name: jenkins
+        state: restarted
+
+- hosts: nexus
+  become: yes
+  remote_user: root
+  gather_facts: false
+  tasks:
+    - name: install packages
+      apt:
+        update_cache: yes
+        name: "{{item}}"
+        state: present
+      with_items:
+        - wget
+        - git
+        - openjdk-8-jdk
+
+    - name: disable the firewall
+      ufw:
+        rule: deny
+        state: disabled
+
+    - name: Copy Nexus Data files
+      copy:
+        src: files/nexus_data.tar.gz
+        dest: /usr/local/nexus_data.tar.gz
+
+    - name: Unarchive Nexus Data files
+      unarchive:
+        src: /usr/local/nexus_data.tar.gz
+        dest: /usr/local/
+        remote_src: yes
